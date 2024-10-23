@@ -305,6 +305,25 @@ public class ITunesBackup {
         }
     }
 
+    public void insertNewFile(String fileId, String domain, String relativePath, int flags, NSDictionary data)
+            throws DatabaseConnectionException {
+        if (!databaseConnected()) this.connectToDatabase();
+
+        try {
+            PreparedStatement statement = this.databaseCon.prepareStatement(
+                    "INSERT INTO Files (fileID, domain, relativePath, flags, file) VALUES (?, ?, ?, ?, ?)");
+            byte[] plist = BinaryPropertyListWriter.writeToArray(data);
+            statement.setString(1, fileId);
+            statement.setString(2, domain);
+            statement.setString(3, relativePath);
+            statement.setInt(4, flags);
+            statement.setBytes(5, plist);
+            statement.executeUpdate();
+        } catch (SQLException | IOException e) {
+            e.printStackTrace();
+        }
+    }
+
     @SuppressWarnings({"SqlResolve", "SqlNoDataSourceInspection"})
     public void removeFileFromDatabase(String fileID) throws DatabaseConnectionException {
         if (!databaseConnected()) this.connectToDatabase();

@@ -3,7 +3,10 @@ package me.maxih.itunes_backup_explorer.api;
 import com.dd.plist.*;
 import me.maxih.itunes_backup_explorer.util.BackupPathUtils;
 import me.maxih.itunes_backup_explorer.util.UtilDict;
+import org.bouncycastle.util.Arrays;
+import org.xml.sax.SAXException;
 
+import javax.xml.parsers.ParserConfigurationException;
 import java.io.*;
 import java.nio.ByteBuffer;
 import java.nio.file.*;
@@ -11,8 +14,10 @@ import java.nio.file.attribute.BasicFileAttributes;
 import java.security.InvalidKeyException;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
+import java.text.ParseException;
 import java.util.NoSuchElementException;
 import java.util.Optional;
+import java.util.UUID;
 
 public class BackupFile {
     public final ITunesBackup backup;
@@ -35,7 +40,23 @@ public class BackupFile {
     private byte[] encryptionKey = null;
     private byte[] digest = null;
 
+    // in support of cloneToNewFile
+    private BackupFile(BackupFile cloneFrom, String newFileName)
+            throws IOException, PropertyListFormatException, ParseException, ParserConfigurationException, SAXException, BackupReadException {
+        this(cloneFrom.backup,
+                UUID.randomUUID().toString(),
+                cloneFrom.domain,
+                BackupPathUtils.getParentPath(cloneFrom.relativePath) + BackupPathUtils.SEPARATOR + newFileName,
+                cloneFrom.flags,
+                (NSDictionary) PropertyListParser.parse(BinaryPropertyListWriter.writeToArray(cloneFrom.data.dict)),
+                false);
+    }
+
     public BackupFile(ITunesBackup backup, String fileID, String domain, String relativePath, int flags, NSDictionary data) throws BackupReadException {
+        this(backup, fileID, domain, relativePath, flags, data, true);
+    }
+
+    private BackupFile(ITunesBackup backup, String fileID, String domain, String relativePath, int flags, NSDictionary data, boolean verifyExistsOnDisk) throws BackupReadException {
         this.backup = backup;
         this.fileID = fileID;
         this.domain = domain;
@@ -51,7 +72,7 @@ public class BackupFile {
 
             if (this.fileType == FileType.FILE) {
                 this.contentFile = Paths.get(backup.directory.getAbsolutePath(), fileID.substring(0, 2), fileID).toFile();
-                if (!this.contentFile.exists())
+                if (verifyExistsOnDisk && !this.contentFile.exists())
                     throw new BackupReadException("Missing file: " + this.fileID + " in " + domain + " (" + relativePath + ")");
 
                 this.size = this.properties.get(NSNumber.class, "Size").orElseThrow().longValue();
@@ -128,6 +149,34 @@ public class BackupFile {
 
     public String getSymlinkTarget() {
         return this.symlinkTarget;
+    }
+
+    public BackupFile cloneToNewFile(String newFileName, File newFileContent)
+            throws BackupReadException, PropertyListFormatException, IOException, ParseException,
+            ParserConfigurationException, SAXException, DatabaseConnectionException, UnsupportedCryptoException,
+            NotUnlockedException, InvalidKeyException {
+        BackupFile newBackupFile = new BackupFile(this, newFileName);
+        if (newBackupFile.backup.manifest.getKeyBag().isPresent()) {
+            newBackupFile.encryptionKey = newBackupFile.backup.manifest.getKeyBag().get()
+                    .generateAndWrapKeyForClass(newBackupFile.protectionClass);
+            UID encryptionKeyUid = this.properties.get(UID.class, "EncryptionKey").orElseThrow();
+            UtilDict utilDict = new UtilDict(this.getObject(NSDictionary.class, encryptionKeyUid));
+            NSData originalNsData = utilDict.getData("NS.data")
+                    .orElseThrow();
+            byte[] originalKeyPrefix = new byte[4];
+            originalNsData.getBytes(ByteBuffer.wrap(originalKeyPrefix), 0, 4);
+            NSData newNsData = new NSData(Arrays.concatenate(originalKeyPrefix, newBackupFile.encryptionKey));
+            utilDict.put("NS.data", newNsData);
+            newBackupFile.setObject(encryptionKeyUid, utilDict.dict);
+        }
+        newBackupFile.replaceWith(newFileContent, true);
+        newBackupFile.backup.insertNewFile(
+                newBackupFile.fileID,
+                newBackupFile.domain,
+                newBackupFile.relativePath,
+                newBackupFile.flags,
+                newBackupFile.data.dict);
+        return newBackupFile;
     }
 
     /**
@@ -220,10 +269,16 @@ public class BackupFile {
     }
 
     public void replaceWith(File newFile) throws IOException, BackupReadException, UnsupportedCryptoException, NotUnlockedException, DatabaseConnectionException {
+        replaceWith(newFile, false);
+    }
+
+    public void replaceWith(File newFile, boolean skipBackup) throws IOException, BackupReadException, UnsupportedCryptoException, NotUnlockedException, DatabaseConnectionException {
         BasicFileAttributes newFileAttributes = Files.readAttributes(newFile.toPath(), BasicFileAttributes.class);
         if (!newFileAttributes.isRegularFile()) throw new IOException("Not a file");
         if (this.fileType != FileType.FILE) throw new UnsupportedOperationException("Not implemented yet");
-        this.backupOriginal();
+        if (!skipBackup) {
+            this.backupOriginal();
+        }
         this.size = newFileAttributes.size();
         this.properties.put("Size", this.size);
         if (this.isEncrypted()) {

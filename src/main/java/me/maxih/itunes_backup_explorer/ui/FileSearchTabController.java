@@ -49,6 +49,9 @@ public class FileSearchTabController {
                 row.setContextMenu(FileActions.getContextMenu(
                         newValue.getFile().get(),
                         tableView.getScene().getWindow(),
+                        insertedFiles -> {
+                            throw new IllegalStateException("Not implemented");
+                        },
                         removedIDs -> filesTable.getItems().removeIf(entry ->
                                 entry.getFile().map(f -> removedIDs.contains(f.fileID)).orElse(false)
                         ))
