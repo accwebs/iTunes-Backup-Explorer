@@ -189,7 +189,7 @@ public class KeyBag {
         }
     }
 
-    public void decryptFile(byte[] protectionClass, byte[] persistentKey, File source, File destination, long size) throws IOException, BackupReadException, UnsupportedCryptoException, NotUnlockedException, InvalidKeyException {
+    public void decryptFile(byte[] protectionClass, byte[] persistentKey, File source, File destination) throws IOException, BackupReadException, UnsupportedCryptoException, NotUnlockedException, InvalidKeyException {
         long bytesWritten = 0L;
         try (
                 BufferedInputStream inputStream = new BufferedInputStream(new FileInputStream(source));
@@ -201,38 +201,29 @@ public class KeyBag {
             decryptStream.transferTo(outputStream);
             outputStream.flush();
             try (FileChannel c = fileOutputStream.getChannel()) {
-                if (size == -1L) {
-                    bytesWritten = c.position();
-                } else {
-                    c.truncate(size);
-                }
+                bytesWritten = c.position();
             }
         }
-        if (size == -1L) {
-            try (FileChannel c = FileChannel.open(destination.toPath(), StandardOpenOption.READ)) {
-                c.position(bytesWritten-1);
-                byte[] singleByte = new byte[1];
-                if (c.read(ByteBuffer.wrap(singleByte)) != 1) {
-                    throw new IOException("Error retrieving last byte of decrypted file");
-                }
-                int paddingLength = 0x00000000FF & singleByte[0];
-                if (paddingLength > 16) {
-                    throw new BackupReadException("Error: bad padding last byte 0x" + Integer.toHexString(paddingLength) + " on file being decrypted");
-                }
-                size = c.position() - paddingLength;
+        long size;
+        try (FileChannel c = FileChannel.open(destination.toPath(), StandardOpenOption.READ)) {
+            c.position(bytesWritten-1);
+            byte[] singleByte = new byte[1];
+            if (c.read(ByteBuffer.wrap(singleByte)) != 1) {
+                throw new IOException("Error retrieving last byte of decrypted file");
             }
-            try (FileChannel c = FileChannel.open(destination.toPath(), StandardOpenOption.WRITE, StandardOpenOption.APPEND)) {
-                c.truncate(size);
+            int paddingLength = 0x00000000FF & singleByte[0];
+            if (paddingLength > 16) {
+                throw new BackupReadException("Error: bad padding last byte 0x" + Integer.toHexString(paddingLength) + " on file being decrypted");
             }
+            size = c.position() - paddingLength;
         }
-    }
-
-    public void decryptFile(int protectionClass, byte[] persistentKey, File source, File destination, long size) throws BackupReadException, UnsupportedCryptoException, NotUnlockedException, IOException, InvalidKeyException {
-        decryptFile(ByteBuffer.allocate(4).putInt(protectionClass).array(), persistentKey, source, destination, size);
+        try (FileChannel c = FileChannel.open(destination.toPath(), StandardOpenOption.WRITE, StandardOpenOption.APPEND)) {
+            c.truncate(size);
+        }
     }
 
     public void decryptFile(int protectionClass, byte[] persistentKey, File source, File destination) throws BackupReadException, UnsupportedCryptoException, NotUnlockedException, IOException, InvalidKeyException {
-        decryptFile(protectionClass, persistentKey, source, destination, -1);
+        decryptFile(ByteBuffer.allocate(4).putInt(protectionClass).array(), persistentKey, source, destination);
     }
 
     public OutputStream encryptStream(byte[] protectionClass, byte[] persistentKey, OutputStream destination) throws BackupReadException, UnsupportedCryptoException, NotUnlockedException, InvalidKeyException {
