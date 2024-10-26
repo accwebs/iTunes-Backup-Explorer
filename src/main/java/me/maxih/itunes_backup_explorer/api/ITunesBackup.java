@@ -2,8 +2,12 @@ package me.maxih.itunes_backup_explorer.api;
 
 import com.dd.plist.BinaryPropertyListWriter;
 import com.dd.plist.NSDictionary;
+import com.dd.plist.NSNumber;
+import com.dd.plist.NSObject;
 import com.dd.plist.PropertyListFormatException;
 import com.dd.plist.PropertyListParser;
+import com.dd.plist.UID;
+import me.maxih.itunes_backup_explorer.util.UtilDict;
 import org.xml.sax.SAXException;
 
 import javax.xml.parsers.ParserConfigurationException;
@@ -14,6 +18,9 @@ import java.nio.file.Files;
 import java.security.InvalidKeyException;
 import java.sql.*;
 import java.text.ParseException;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Comparator;
 import java.util.Date;
 import java.util.*;
 import java.util.stream.Collectors;
@@ -50,6 +57,7 @@ public class ITunesBackup {
     public BackupManifest manifest;
 
     private BackupInfo backupInfo = null;
+    private Optional<Long> largestINodeNumber = Optional.empty();
 
     public File decryptedDatabaseFile;
     private Connection databaseCon;
@@ -305,6 +313,25 @@ public class ITunesBackup {
         }
     }
 
+    public void insertNewFile(String fileId, String domain, String relativePath, int flags, NSDictionary data)
+            throws DatabaseConnectionException {
+        if (!databaseConnected()) this.connectToDatabase();
+
+        try {
+            PreparedStatement statement = this.databaseCon.prepareStatement(
+                    "INSERT INTO Files (fileID, domain, relativePath, flags, file) VALUES (?, ?, ?, ?, ?)");
+            byte[] plist = BinaryPropertyListWriter.writeToArray(data);
+            statement.setString(1, fileId);
+            statement.setString(2, domain);
+            statement.setString(3, relativePath);
+            statement.setInt(4, flags);
+            statement.setBytes(5, plist);
+            statement.executeUpdate();
+        } catch (SQLException | IOException e) {
+            e.printStackTrace();
+        }
+    }
+
     @SuppressWarnings({"SqlResolve", "SqlNoDataSourceInspection"})
     public void removeFileFromDatabase(String fileID) throws DatabaseConnectionException {
         if (!databaseConnected()) this.connectToDatabase();
@@ -320,6 +347,37 @@ public class ITunesBackup {
     @FunctionalInterface
     private interface StatementPreparation {
         void prepare(PreparedStatement statement) throws SQLException;
+    }
+
+    public long computeNextAvailableInodeNumber() throws DatabaseConnectionException, SQLException,
+            PropertyListFormatException, IOException, ParseException, ParserConfigurationException, SAXException {
+        if (largestINodeNumber.isEmpty()) {
+            if (!databaseConnected()) {
+                this.connectToDatabase();
+            }
+            long computedMax = 0;
+            PreparedStatement statement = this.databaseCon.prepareStatement(
+                    "SELECT file FROM Files");
+            ResultSet result = statement.executeQuery();
+            while (result.next()) {
+                UtilDict filePlist = new UtilDict((NSDictionary) PropertyListParser.parse(result.getBinaryStream(1)));
+                UID rootObjectId = filePlist.get(UID.class, "$top", "root").orElseThrow();
+                NSObject[] objects = filePlist.getArray("$objects").orElseThrow();
+                byte propertiesObjectIndex = rootObjectId.getBytes()[0];
+                Object propertiesObject = objects[propertiesObjectIndex];
+                if (!(propertiesObject instanceof NSDictionary)) {
+                    throw new NoSuchElementException();
+                }
+                UtilDict propertiesObjectConcrete = new UtilDict((NSDictionary) propertiesObject);
+                long inodeNumber = propertiesObjectConcrete.get(NSNumber.class, "InodeNumber").orElseThrow()
+                        .longValue();
+                computedMax = Math.max(computedMax, inodeNumber);
+            }
+            largestINodeNumber = Optional.of(computedMax);
+        }
+        long result = largestINodeNumber.get() + 1L;
+        largestINodeNumber = Optional.of(result);
+        return result;
     }
 
 }

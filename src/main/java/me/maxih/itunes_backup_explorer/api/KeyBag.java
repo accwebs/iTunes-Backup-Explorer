@@ -18,6 +18,7 @@ import java.security.InvalidAlgorithmParameterException;
 import java.security.InvalidKeyException;
 import java.security.Key;
 import java.security.NoSuchAlgorithmException;
+import java.security.SecureRandom;
 import java.security.spec.InvalidKeySpecException;
 import java.security.spec.KeySpec;
 import java.util.Arrays;
@@ -29,6 +30,8 @@ public class KeyBag {
     private static final Set<String> CLASS_KEY_TAGS = Set.of("CLAS", "WRAP", "WPKY", "KTYP", "PBKY");
     private static final int WRAP_DEVICE = 1;
     private static final int WRAP_PASSCODE = 2;
+
+    private static final SecureRandom secureRandom = new SecureRandom();
 
     public int type;
     public byte[] uuid;
@@ -176,6 +179,40 @@ public class KeyBag {
         }
     }
 
+    public byte[] generateAndWrapKeyForClass(int protectionClass)
+            throws BackupReadException, UnsupportedCryptoException, NotUnlockedException, InvalidKeyException {
+        return generateAndWrapKeyForClass(ByteBuffer.allocate(4).putInt(protectionClass).array());
+    }
+
+    public byte[] generateAndWrapKeyForClass(byte[] protectionClass)
+            throws BackupReadException, NotUnlockedException, InvalidKeyException, UnsupportedCryptoException {
+        if (this.isLocked()) throw new NotUnlockedException();
+
+        Map<String, byte[]> classKeyMap = this.classKeys.get(ByteBuffer.wrap(protectionClass));
+        if (classKeyMap == null)
+            throw new BackupReadException("Specified protection class '" + Arrays.toString(protectionClass) + "' was not found");
+
+        byte[] classKey = classKeyMap.get("KEY");
+        if (classKey == null)
+            throw new BackupReadException("No class key was found for the specified protection class");
+
+        byte[] plaintextKey = new byte[32];
+        secureRandom.nextBytes(plaintextKey);
+
+        byte[] wrappedKey;
+        try {
+            Cipher c = Cipher.getInstance("AESWrap");
+            c.init(Cipher.WRAP_MODE, new SecretKeySpec(classKey, "AES"));
+            wrappedKey = c.wrap(new SecretKeySpec(plaintextKey, "AES"));
+        } catch (NoSuchAlgorithmException | NoSuchPaddingException | IllegalBlockSizeException e) {
+            throw new UnsupportedCryptoException(e);
+        }
+
+        if (wrappedKey.length != 0x28)
+            throw new BackupReadException("Invalid class key length");
+
+        return wrappedKey;
+    }
 
     public InputStream decryptStream(byte[] protectionClass, byte[] persistentKey, InputStream source) throws UnsupportedCryptoException, BackupReadException, NotUnlockedException, InvalidKeyException {
         byte[] key = this.unwrapKeyForClass(protectionClass, persistentKey);

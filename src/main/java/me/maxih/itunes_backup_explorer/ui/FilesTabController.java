@@ -113,6 +113,11 @@ public class FilesTabController {
                     setContextMenu(FileActions.getContextMenu(
                             newValue.getFile().get(),
                             splitPane.getScene().getWindow(),
+                            insertedFiles -> insertedFiles.forEach(insertedFile -> {
+                                final BackupFileEntry backupFileEntry = new BackupFileEntry(insertedFile);
+                                final TreeItem<BackupFileEntry> treeItem = new TreeItem<>(backupFileEntry);
+                                parent.getChildren().add(treeItem);
+                            }),
                             // Children are automatically removed as well by the tree structure, so removedIDs can be ignored
                             removedIDs -> parent.getChildren().remove(getTreeItem()))
                     );

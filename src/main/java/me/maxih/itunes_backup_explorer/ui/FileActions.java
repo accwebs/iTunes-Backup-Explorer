@@ -1,5 +1,6 @@
 package me.maxih.itunes_backup_explorer.ui;
 
+import com.dd.plist.PropertyListFormatException;
 import javafx.scene.control.Button;
 import javafx.scene.control.MenuItem;
 import javafx.scene.control.TextArea;
@@ -8,13 +9,23 @@ import javafx.scene.layout.HBox;
 import javafx.stage.FileChooser;
 import javafx.stage.Window;
 import me.maxih.itunes_backup_explorer.api.*;
+import me.maxih.itunes_backup_explorer.util.BackupPathUtils;
+import org.xml.sax.SAXException;
 
+import javax.xml.parsers.ParserConfigurationException;
 import java.awt.*;
 import java.io.File;
 import java.io.IOException;
 import java.nio.file.Files;
+import java.security.InvalidKeyException;
+import java.security.NoSuchAlgorithmException;
+import java.sql.SQLException;
+import java.text.ParseException;
 import java.util.ArrayList;
+import java.util.Collection;
+import java.util.Collections;
 import java.util.List;
+import java.util.Optional;
 import java.util.function.Consumer;
 
 public class FileActions {
@@ -47,6 +58,34 @@ public class FileActions {
         } catch (IOException | BackupReadException | NotUnlockedException | UnsupportedCryptoException e) {
             e.printStackTrace();
             Dialogs.showAlert(Alert.AlertType.ERROR, e.getMessage(), ButtonType.OK);
+        }
+    }
+
+    public static void cloneAndReplaceFile(BackupFile file,
+                                           Window chooserOwnerWindow,
+                                           Consumer<? super Collection<? extends BackupFile>> insertCallback) {
+        TextInputDialog fileNameInput = new TextInputDialog(file.getFileName());
+        fileNameInput.setHeaderText("Name of new file:");
+        final Optional<String> newFileName = fileNameInput.showAndWait();
+        if (newFileName.isPresent()) {
+            FileChooser chooser = new FileChooser();
+            String ext = BackupPathUtils.getFileExtension(newFileName.get());
+            if (!ext.isEmpty())
+                chooser.getExtensionFilters().add(new FileChooser.ExtensionFilter(ext, "*." + ext));
+            File source = chooser.showOpenDialog(chooserOwnerWindow);
+            if (source == null) return;
+
+            try {
+                final BackupFile newFile = file.cloneToNewFile(newFileName.get(), source);
+                file.backup.reEncryptDatabase();
+                insertCallback.accept(Collections.singletonList(newFile));
+            } catch (IOException | BackupReadException | NotUnlockedException | UnsupportedCryptoException |
+                     DatabaseConnectionException | PropertyListFormatException | ParseException |
+                     ParserConfigurationException | SAXException | InvalidKeyException | NoSuchAlgorithmException |
+                     SQLException e) {
+                e.printStackTrace();
+                Dialogs.showAlert(Alert.AlertType.ERROR, e.getMessage(), ButtonType.OK);
+            }
         }
     }
 
@@ -91,7 +130,7 @@ public class FileActions {
      * @param file The BackupFile to delete
      * @param removeCallback This is called with the <code>fileID</code>s of the deleted files including children
      */
-    public static void delete(BackupFile file, Consumer<List<String>> removeCallback) {
+    public static void delete(BackupFile file, Consumer<? super List<String>> removeCallback) {
         Alert confirmation = Dialogs.getAlert(Alert.AlertType.CONFIRMATION,
                 file.getFileType() == BackupFile.FileType.DIRECTORY
                         ? "Are you sure you want to delete this folder and everything in it?"
@@ -136,7 +175,9 @@ public class FileActions {
         }
     }
 
-    public static ContextMenu getContextMenu(BackupFile file, Window ownerWindow, Consumer<List<String>> removeCallback) {
+    public static ContextMenu getContextMenu(BackupFile file, Window ownerWindow,
+                                             Consumer<? super Collection<? extends BackupFile>> insertCallback,
+                                             Consumer<? super Collection<String>> removeCallback) {
         MenuItem openFileItem = new MenuItem("Open file");
         openFileItem.setOnAction(event -> FileActions.openFile(file));
 
@@ -145,6 +186,9 @@ public class FileActions {
 
         MenuItem replaceItem = new MenuItem("Replace...");
         replaceItem.setOnAction(event -> FileActions.replaceFile(file, ownerWindow));
+
+        MenuItem cloneAndReplaceItem = new MenuItem("Clone & Replace...");
+        cloneAndReplaceItem.setOnAction(event -> FileActions.cloneAndReplaceFile(file, ownerWindow, insertCallback));
 
         MenuItem showSymlinkTargetItem = new MenuItem("Show symlink target");
         showSymlinkTargetItem.setOnAction(event -> FileActions.showSymlinkTarget(file));
@@ -162,7 +206,7 @@ public class FileActions {
         if (file.getFileType() == BackupFile.FileType.DIRECTORY)
             menu.getItems().addAll(insertFilesItem, deleteItem);
         else if (file.getFileType() == BackupFile.FileType.FILE)
-            menu.getItems().addAll(openFileItem, extractFileItem, replaceItem, deleteItem);
+            menu.getItems().addAll(openFileItem, extractFileItem, replaceItem, cloneAndReplaceItem, deleteItem);
         else if (file.getFileType() == BackupFile.FileType.SYMBOLIC_LINK)
             menu.getItems().addAll(showSymlinkTargetItem, deleteItem);
 
